@@ -2,57 +2,47 @@ package main
 
 import (
 	"log"
-	"net/http"
+	"os"
 
 	"Pinspire/backend/database"
-	"Pinspire/backend/models"
-	"Pinspire/backend/service"
-
-	"github.com/gorilla/mux"
+	"Pinspire/backend/routes"
+	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	// Get database connection
-	db := database.GetDB()
-
-	// Enable uuid-ossp extension
-	if err := db.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`).Error; err != nil {
-		log.Fatalf("Failed to create uuid extension: %v", err)
+	// Load environment variables
+	if err := godotenv.Load(); err != nil {
+		log.Fatal("Error loading .env file")
 	}
 
-	// Автоматическая миграция базы данных в правильном порядке
-	err := db.AutoMigrate(
-		&models.Location{},        // First, as it's referenced by User
-		&models.User{},            // Second, as it's referenced by Board and Pin
-		&models.Product{},         // Third, as it's referenced by Pin
-		&models.Board{},           // Fourth, depends on User
-		&models.Pin{},             // Fifth, depends on User, Board, and Product
-		&models.UserProductLink{}, // Last, depends on User and Product
-	)
+	// Connect to MongoDB
+	dbClient, err := database.ConnectDB()
 	if err != nil {
-		log.Fatalf("Failed to migrate database: %v", err)
+		log.Fatal("Database connection error: ", err)
 	}
 
-	// Инициализация сервисов
-	userService := service.NewUserService(db)
-	fallbackService := service.NewFallbackService(db)
+	// Initialize Gin router
+	router := gin.Default()
 
-	// Создаем новый маршрутизатор mux
-	r := mux.NewRouter()
+	// Make the database client available in the context
+	router.Use(func(c *gin.Context) {
+		c.Set("db", dbClient)
+		c.Next()
+	})
 
-	// Регистрируем маршруты для пользователей
-	r.HandleFunc("/users", userService.CreateUser).Methods("POST")
-	r.HandleFunc("/users", userService.GetUsers).Methods("GET")
-	r.HandleFunc("/users/{id}", userService.GetUser).Methods("GET")
-	r.HandleFunc("/users/{id}", userService.UpdateUser).Methods("PUT")
-	r.HandleFunc("/users/{id}", userService.DeleteUser).Methods("DELETE")
+	// Register API routes
+	routes.RegisterRoutes(router)
 
-	// Регистрируем fallback-сервис для отображения ссылок
-	// Маршрут /display/ будет обрабатывать запросы вида:
-	// GET /display/{productID}?location_id={locationID}
-	r.HandleFunc("/display/", fallbackService.LinkDisplayHandler).Methods("GET")
+	// Serve static frontend files (assumes you built your frontend into ./frontend/dist)
+	router.Static("/", "./frontend/dist")
+	router.NoRoute(func(c *gin.Context) {
+		c.File("./frontend/dist/index.html")
+	})
 
-	// Запуск сервера
-	log.Println("Server is running on port 8080...")
-	log.Fatal(http.ListenAndServe(":8080", r))
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "5000"
+	}
+	router.Run(":" + port)
 }
